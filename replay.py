@@ -14,8 +14,65 @@ import tty
 import termios
 import select
 import os
+import math
 
-# === CONFIG & STYLING (omitted for brevity, no changes) ===
+# === UTILITY FUNCTIONS ===
+# Moved from the end of the file to the top
+def format_timedelta(td, dim=False, bold=False, color=None):
+    """
+    Formats a pandas Timedelta object into a human-readable string.
+    """
+    if pd.isna(td):
+        return ""
+    seconds = td.total_seconds()
+    minutes = math.floor(seconds / 60)
+    seconds_remainder = seconds % 60
+    
+    formatted_str = f"{minutes}:{seconds_remainder:05.2f}"
+    
+    prefix = ""
+    suffix = ""
+    if color: prefix += color
+    if bold: prefix += "\033[1m"
+    if dim: prefix += "\033[2m"
+    if color or bold or dim: suffix = "\033[0m"
+    
+    return f"{prefix}{formatted_str}{suffix}"
+
+def format_gap(gap_td, prev_lap_time, is_leader):
+    """
+    Formats the gap to the leader or interval to the car ahead.
+    """
+    if is_leader or pd.isna(gap_td):
+        return ""
+    
+    if pd.isna(prev_lap_time):
+        return f"+{gap_td.total_seconds():.1f}"
+        
+    delta = gap_td.total_seconds()
+    if delta < 1.0:
+        return "DRS"
+    else:
+        return f"+{delta:.1f}"
+
+def get_padded_str(s, length, align='right'):
+    """
+    Pads a string to a given length, preserving ANSI color codes.
+    """
+    s_clean = re.sub(r'\x1b\[[0-9;]*m', '', s)
+    s_len = len(s_clean)
+    
+    if s_len >= length:
+        return s
+    
+    padding_needed = length - s_len
+    
+    if align == 'right':
+        return ' ' * padding_needed + s
+    else:
+        return s + ' ' * padding_needed
+
+# === CONFIG & STYLING ===
 DEFAULT_PLAYBACK_SPEED = 1.0; OVERTAKE_ARROW_DURATION = pd.Timedelta(seconds=4)
 FRAME_RATE = 20.0; FRAME_DURATION = 1.0 / FRAME_RATE
 COL_WIDTHS = { "POS": 6, "DRIVER": 7, "TEAM": 13, "STATUS": 9, "PITS": 5, "TYRE": 8, "INTERVAL": 9, "GAP": 9, "S1": 9, "S2": 9, "S3": 9, "PREV_LAP": 9 }
@@ -30,49 +87,66 @@ SHORT_TEAM_NAMES = { "Red Bull Racing": "Red Bull", "Stake F1 Team Kick Sauber":
 SHORT_TYRE_NAMES = { "SOFT": "S", "MEDIUM": "M", "HARD": "H", "INTERMEDIATE": "I", "WET": "W", }
 TRACK_STATUS_MAP = { '1': (FLAG_GREEN_BG, FG_BLACK, "TRACK CLEAR"), '2': (FLAG_YELLOW_BG, FG_BLACK, "YELLOW FLAG"), '4': (FLAG_YELLOW_BG, FG_BLACK, "SAFETY CAR"), '5': (FLAG_RED_BG, FG_WHITE, "RED FLAG"), '6': (FLAG_YELLOW_BG, FG_BLACK, "VSC DEPLOYED"), '7': (FLAG_GREEN_BG, FG_BLACK, "VSC ENDING"), }
 
-# === MENU & ORCHESTRATION (omitted for brevity, no changes) ===
+# === MENU & ORCHESTRATION ===
 def get_race_schedule(year):
-    print(f"Fetching {year} race schedule..."); schedule = fastf1.get_event_schedule(year)
+    print(f"Fetching {year} race schedule...")
+    schedule = fastf1.get_event_schedule(year)
     return schedule[schedule['EventDate'].dt.tz_localize(None) < datetime.datetime.now()]
+
 def check_race_status(year, event_name):
-    event_name_safe = event_name.replace(' ', '_'); raw_path = Path(f"raw_data/{year}_{event_name_safe}"); processed_path = Path(f"processed_data/{year}_{event_name_safe}_timeline.parquet")
-    if processed_path.exists(): return f"{SECTOR_GREEN}Processed{RESET}"
-    if raw_path.exists() and (raw_path / "laps.pkl").exists(): return f"{SECTOR_YELLOW}Raw Data{RESET}"
+    event_name_safe = event_name.replace(' ', '_')
+    raw_path = Path(f"raw_data/{year}_{event_name_safe}")
+    processed_path = Path(f"processed_data/{year}_{event_name_safe}_timeline.parquet")
+    if processed_path.exists():
+        return f"{SECTOR_GREEN}Processed{RESET}"
+    if raw_path.exists() and (raw_path / "laps.pkl").exists():
+        return f"{SECTOR_YELLOW}Raw Data{RESET}"
     return f"{DIM}Not Downloaded{RESET}"
+
 def display_menu(races_with_status):
     print(f"\n{BOLD}Select a race to replay:{RESET}")
     for i, race in enumerate(races_with_status):
         print(f" {i+1:2d}) Round {race['RoundNumber']:<2} - {race['EventName']:<25} | Status: {race['Status']}")
     print("\n Enter 'q' to quit.")
+
 def run_script(script_name, year, event_name):
     command = [sys.executable, script_name, str(year), event_name]
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         while True:
             output = process.stdout.readline()
-            if output == '' and process.poll() is not None: break
-            if output: print(output.strip())
+            if output == '' and process.poll() is not None:
+                break
+            if output:
+                print(output.strip())
         return process.poll() == 0
     except Exception as e:
-        print(f"❌ An error occurred while running {script_name}: {e}"); return False
+        print(f"❌ An error occurred while running {script_name}: {e}")
+        return False
+
 def get_user_input():
-    if not select.select([sys.stdin], [], [], 0)[0]: return None
+    if not select.select([sys.stdin], [], [], 0)[0]:
+        return None
     char = sys.stdin.read(1)
     if char == '\x1b':
         seq = sys.stdin.read(2)
-        if seq == '[A': return 'up'
-        if seq == '[B': return 'down'
-        if seq == '[C': return 'right'
-        if seq == '[D': return 'left'
+        if seq == '[A':
+            return 'up'
+        if seq == '[B':
+            return 'down'
+        if seq == '[C':
+            return 'right'
+        if seq == '[D':
+            return 'left'
     return char
 
 # === REPLAY ENGINE ===
-  # In replay.py, replace the whole draw_leaderboard function with this:
 
 def draw_leaderboard(year, event_name, driver_state, sorted_drivers, driver_teams, race_laps, total_laps, current_race_time, best_times, status_info, playback_info):
     """Draws the entire screen based on the current state."""
-    leader = sorted_drivers[0]; leader_state = driver_state[leader]
-    screen_content = []; screen_content.append(CLEAR_SCREEN)
+    leader = sorted_drivers[0]
+    leader_state = driver_state[leader]
+    screen_content = [CLEAR_SCREEN]
     is_paused, playback_speed = playback_info
     
     # --- 1. Draw Header ---
@@ -86,22 +160,42 @@ def draw_leaderboard(year, event_name, driver_state, sorted_drivers, driver_team
     bg_color, fg_color, status_text = TRACK_STATUS_MAP.get(track_status_code, (None, None, "UNKNOWN"))
     
     status_line_parts = []
-    if bg_color: status_line_parts.append(f"{bg_color}{fg_color} {status_text} {RESET}")
+    if bg_color:
+        status_line_parts.append(f"{bg_color}{fg_color} {status_text} {RESET}")
     
     drs_status_text = f"{SECTOR_GREEN}DRS ENABLED{RESET}" if drs_allowed else f"{DIM}DRS DISABLED{RESET}"
     status_line_parts.append(drs_status_text)
     
-    if is_wet: status_line_parts.append(f"{BOLD}{TYRE_COLORS['W']}WET TRACK{RESET}")
+    if is_wet:
+        status_line_parts.append(f"{BOLD}{TYRE_COLORS['W']}WET TRACK{RESET}")
     screen_content.append(" | ".join(status_line_parts))
 
-    completed_laps = max(0, race_laps - 1);
-    if leader_state['Status'] != 'On Track': progress_percent = 1.0
-    else: progress_percent = (completed_laps / total_laps if total_laps > 0 else 0)
-    filled_width = int(progress_percent * PROGRESS_BAR_WIDTH); bar = '█' * filled_width + '░' * (PROGRESS_BAR_WIDTH - filled_width); progress_line = f"Progress: [{bar}] {progress_percent:.1%}"
+    completed_laps = max(0, race_laps - 1)
+    if leader_state['Status'] != 'On Track':
+        progress_percent = 1.0
+    else:
+        progress_percent = (completed_laps / total_laps if total_laps > 0 else 0)
+    filled_width = int(progress_percent * PROGRESS_BAR_WIDTH)
+    bar = '█' * filled_width + '░' * (PROGRESS_BAR_WIDTH - filled_width)
+    progress_line = f"Progress: [{bar}] {progress_percent:.1%}"
     screen_content.append(progress_line)
     
-    header_line = ( f"{'':<{COL_WIDTHS['POS']}}" f"{'DRIVER':<{COL_WIDTHS['DRIVER']}}" f"{'TEAM':<{COL_WIDTHS['TEAM']}}" f"{'STATUS':<{COL_WIDTHS['STATUS']}}" f"{'PITS':<{COL_WIDTHS['PITS']}}" f"{'TYRE':<{COL_WIDTHS['TYRE']}}" f"{'INTERVAL':<{COL_WIDTHS['INTERVAL']}}" f"{'GAP':<{COL_WIDTHS['GAP']}}" f"{'S1':<{COL_WIDTHS['S1']}}" f"{'S2':<{COL_WIDTHS['S2']}}" f"{'S3':<{COL_WIDTHS['S3']}}" f"{'PREV LAP':<{COL_WIDTHS['PREV_LAP']}}" )
-    screen_content.append(header_line); screen_content.append("-" * len(header_line))
+    header_line = (
+        f"{'':<{COL_WIDTHS['POS']}}"
+        f"{'DRIVER':<{COL_WIDTHS['DRIVER']}}"
+        f"{'TEAM':<{COL_WIDTHS['TEAM']}}"
+        f"{'STATUS':<{COL_WIDTHS['STATUS']}}"
+        f"{'PITS':<{COL_WIDTHS['PITS']}}"
+        f"{'TYRE':<{COL_WIDTHS['TYRE']}}"
+        f"{'INTERVAL':<{COL_WIDTHS['INTERVAL']}}"
+        f"{'GAP':<{COL_WIDTHS['GAP']}}"
+        f"{'S1':<{COL_WIDTHS['S1']}}"
+        f"{'S2':<{COL_WIDTHS['S2']}}"
+        f"{'S3':<{COL_WIDTHS['S3']}}"
+        f"{'PREV LAP':<{COL_WIDTHS['PREV_LAP']}}"
+    )
+    screen_content.append(header_line)
+    screen_content.append("-" * len(header_line))
 
     # --- 2. Draw Driver Lines (REFACTORED FOR CLARITY) ---
     for i, drv in enumerate(sorted_drivers):
@@ -123,7 +217,8 @@ def draw_leaderboard(year, event_name, driver_state, sorted_drivers, driver_team
         parts.append(f"{bg}{fg}{display_team}{padding}{RESET}")
         
         display_status = state['DisplayStatus']
-        if state['Status'] != 'On Track': display_status = state['Status']
+        if state['Status'] != 'On Track':
+            display_status = state['Status']
         parts.append(get_padded_str(f"{BOLD}{display_status}{RESET}", COL_WIDTHS['STATUS']))
         
         if state['Status'] == 'On Track' and display_status != 'GRID':
@@ -145,7 +240,8 @@ def draw_leaderboard(year, event_name, driver_state, sorted_drivers, driver_team
                 interval_td = state['Interval']
                 interval_str = format_timedelta(interval_td)
                 drs_is_active = drs_allowed and pd.notna(interval_td) and interval_td.total_seconds() < 1.0
-                if drs_is_active: interval_str = f"{DRS_COLOR}{interval_str}{RESET}"
+                if drs_is_active:
+                    interval_str = f"{DRS_COLOR}{interval_str}{RESET}"
                 parts.append(get_padded_str(interval_str, COL_WIDTHS['INTERVAL']))
                 
                 gap_str = format_gap(state['GapToLeader'], leader_state.get('S3', pd.NaT), i == 0)
@@ -202,24 +298,37 @@ def draw_leaderboard(year, event_name, driver_state, sorted_drivers, driver_team
     sys.stdout.write("\n".join(screen_content)); sys.stdout.flush()
 
 def run_replay(year, event_name, playback_speed):
-    event_name_safe = event_name.replace(" ", "_"); BASE_PATH = Path(__file__).parent
-    DATA_FILE = BASE_PATH / f"processed_data/{year}_{event_name_safe}_timeline.parquet"; RAW_DATA_FOLDER = BASE_PATH / f"raw_data/{year}_{event_name_safe}"
+    event_name_safe = event_name.replace(" ", "_")
+    BASE_PATH = Path(__file__).parent
+    DATA_FILE = BASE_PATH / f"processed_data/{year}_{event_name_safe}_timeline.parquet"
+    RAW_DATA_FOLDER = BASE_PATH / f"raw_data/{year}_{event_name_safe}"
     try:
         timeline_df = pd.read_parquet(DATA_FILE)
-        if not timeline_df.empty: first_event_time = timeline_df['Time'].iloc[0]; timeline_df['Time'] = timeline_df['Time'] - first_event_time
-        results_df = pd.read_pickle(RAW_DATA_FOLDER / "results.pkl"); laps_df = pd.read_pickle(RAW_DATA_FOLDER / "laps.pkl")
-        drivers = results_df['Abbreviation'].tolist(); driver_teams = dict(zip(results_df['Abbreviation'], results_df['TeamName']))
+        if not timeline_df.empty:
+            first_event_time = timeline_df['Time'].iloc[0]
+            timeline_df['Time'] = timeline_df['Time'] - first_event_time
+        results_df = pd.read_pickle(RAW_DATA_FOLDER / "results.pkl")
+        laps_df = pd.read_pickle(RAW_DATA_FOLDER / "laps.pkl")
+        drivers = results_df['Abbreviation'].tolist()
+        driver_teams = dict(zip(results_df['Abbreviation'], results_df['TeamName']))
         
         # --- NEW: Load all status data, with fallbacks ---
-        try: track_status_df = pd.read_pickle(RAW_DATA_FOLDER / "track_status.pkl")
-        except FileNotFoundError: track_status_df = pd.DataFrame()
-        try: weather_df = pd.read_pickle(RAW_DATA_FOLDER / "weather_data.pkl")
-        except FileNotFoundError: weather_df = pd.DataFrame()
-        try: race_control_df = pd.read_pickle(RAW_DATA_FOLDER / "race_control.pkl")
-        except FileNotFoundError: race_control_df = pd.DataFrame()
+        try:
+            track_status_df = pd.read_pickle(RAW_DATA_FOLDER / "track_status.pkl")
+        except FileNotFoundError:
+            track_status_df = pd.DataFrame()
+        try:
+            weather_df = pd.read_pickle(RAW_DATA_FOLDER / "weather_data.pkl")
+        except FileNotFoundError:
+            weather_df = pd.DataFrame()
+        try:
+            race_control_df = pd.read_pickle(RAW_DATA_FOLDER / "race_control.pkl")
+        except FileNotFoundError:
+            race_control_df = pd.DataFrame()
 
     except FileNotFoundError as e:
-        print(f"❌ Error: Could not load data file: {e.filename}"); return
+        print(f"❌ Error: Could not load data file: {e.filename}")
+        return
     
     # --- NEW: Pre-process Race Control messages to create a DRS timeline ---
     drs_status_df = pd.DataFrame()
@@ -231,83 +340,125 @@ def run_replay(year, event_name, playback_speed):
                 drs_timeline.append({'Time': row.Time, 'DRS_Status': "ENABLED" in row.Message.upper()})
             drs_status_df = pd.DataFrame(drs_timeline)
 
-    # (State Init is unchanged, omitted for brevity)
-    lap1_laps = laps_df.loc[laps_df['LapNumber'] == 1]; starting_compounds = dict(zip(lap1_laps['Driver'], lap1_laps['Compound']))
-    driver_state = {}; starting_grid = results_df.sort_values(by='GridPosition')
+    # (State Init is unchanged)
+    lap1_laps = laps_df.loc[laps_df['LapNumber'] == 1]
+    starting_compounds = dict(zip(lap1_laps['Driver'], lap1_laps['Compound']))
+    driver_state = {}
+    starting_grid = results_df.sort_values(by='GridPosition')
     for i, driver_row in starting_grid.iterrows():
         drv = driver_row['Abbreviation']
-        driver_state[drv] = { "Position": driver_row['GridPosition'], "PreviousPosition": driver_row['GridPosition'], "LapNumber": 0, "Compound": starting_compounds.get(drv, "?"), "TyreLife": 1, "GapToLeader": pd.NaT, "Interval": pd.NaT, "Status": "On Track", "DisplayStatus": "GRID", "LastEventType": "", "LastEventLap": 0, "PitStops": 0, "S1": pd.NaT, "S2": pd.NaT, "S3": pd.NaT, "Prev_S2": pd.NaT, "Prev_S3": pd.NaT, "PreviousLapTime": pd.NaT, "LastUpdateTime": pd.Timedelta(seconds=-1), 'IsPersonalBestS1': False, 'IsPersonalBestS2': False, 'IsPersonalBestS3': False, 'PositionChangeSymbol': '', 'PositionChangeExpiry': pd.Timedelta(seconds=-1) }
+        driver_state[drv] = {
+            "Position": driver_row['GridPosition'], "PreviousPosition": driver_row['GridPosition'], "LapNumber": 0, "Compound": starting_compounds.get(drv, "?"), "TyreLife": 1, "GapToLeader": pd.NaT, "Interval": pd.NaT, "Status": "On Track", "DisplayStatus": "GRID", "LastEventType": "", "LastEventLap": 0, "PitStops": 0, "S1": pd.NaT, "S2": pd.NaT, "S3": pd.NaT, "Prev_S2": pd.NaT, "Prev_S3": pd.NaT, "PreviousLapTime": pd.NaT, "LastUpdateTime": pd.Timedelta(seconds=-1), 'IsPersonalBestS1': False, 'IsPersonalBestS2': False, 'IsPersonalBestS3': False, 'PositionChangeSymbol': '', 'PositionChangeExpiry': pd.Timedelta(seconds=-1)
+        }
     
     try:
         event_index, timeline_events = 0, timeline_df.to_dict('records')
         total_events, total_laps = len(timeline_events), int(timeline_df['LapNumber'].max())
-        if total_events == 0: print("❌ Timeline file contains no events."); return
+        if total_events == 0:
+            print("❌ Timeline file contains no events.")
+            return
         best_s1_so_far, best_s2_so_far, best_s3_so_far = pd.Timedelta.max, pd.Timedelta.max, pd.Timedelta.max
         draw_leaderboard(year, event_name, driver_state, drivers, driver_teams, 0, total_laps, None, (None, None, None), ('1', False, False), (False, playback_speed))
         time.sleep(5)
         
-        current_race_time = timeline_events[0]['Time']; is_paused = False; last_frame_time = time.monotonic()
+        current_race_time = timeline_events[0]['Time']
+        is_paused = False
+        last_frame_time = time.monotonic()
         
         while event_index < total_events:
-            # (Input handling and time advancement omitted for brevity)
-            key = get_user_input();
+            # (Input handling and time advancement)
+            key = get_user_input()
             if key:
-                if key.lower() == 'q': print("\nQuitting replay."); break
-                if key.lower() == 'p' or key == ' ': is_paused = not is_paused
-                if key.lower() == 'f' or key == 'up': playback_speed *= 2
-                if key.lower() == 'r' or key == 'down': playback_speed = max(0.25, playback_speed / 2)
-                if key == '1': playback_speed = 1.0
-                if key == 'right': current_race_time += pd.Timedelta(seconds=10)
-                if key == 'left': current_race_time = max(timeline_events[0]['Time'], current_race_time - pd.Timedelta(seconds=10)); event_index = 0
-            real_time_now = time.monotonic(); real_time_delta = real_time_now - last_frame_time; last_frame_time = real_time_now
+                if key.lower() == 'q':
+                    print("\nQuitting replay.")
+                    break
+                if key.lower() == 'p' or key == ' ':
+                    is_paused = not is_paused
+                if key.lower() == 'f' or key == 'up':
+                    playback_speed *= 2
+                if key.lower() == 'r' or key == 'down':
+                    playback_speed = max(0.25, playback_speed / 2)
+                if key == '1':
+                    playback_speed = 1.0
+                if key == 'right':
+                    current_race_time += pd.Timedelta(seconds=10)
+                if key == 'left':
+                    current_race_time = max(timeline_events[0]['Time'], current_race_time - pd.Timedelta(seconds=10))
+                    event_index = 0
+            real_time_now = time.monotonic()
+            real_time_delta = real_time_now - last_frame_time
+            last_frame_time = real_time_now
             if not is_paused:
-                race_time_delta = pd.Timedelta(seconds=real_time_delta * playback_speed); current_race_time += race_time_delta
+                race_time_delta = pd.Timedelta(seconds=real_time_delta * playback_speed)
+                current_race_time += race_time_delta
                 while event_index < total_events and timeline_events[event_index]['Time'] <= current_race_time:
                     # (Event processing logic unchanged)
-                    event = timeline_events[event_index]; drv = event['Driver']; state = driver_state[drv]; new_pos = event['Position']
+                    event = timeline_events[event_index]
+                    drv = event['Driver']
+                    state = driver_state[drv]
+                    new_pos = event['Position']
                     if new_pos != state['PreviousPosition'] and state['LastEventLap'] > 1:
-                        if new_pos < state['PreviousPosition']: state['PositionChangeSymbol'] = f"{POS_GAIN_COLOR}▲{RESET}"
-                        else: state['PositionChangeSymbol'] = f"{POS_LOSS_COLOR}▼{RESET}"
+                        if new_pos < state['PreviousPosition']:
+                            state['PositionChangeSymbol'] = f"{POS_GAIN_COLOR}▲{RESET}"
+                        else:
+                            state['PositionChangeSymbol'] = f"{POS_LOSS_COLOR}▼{RESET}"
                         state['PositionChangeExpiry'] = event['Time'] + OVERTAKE_ARROW_DURATION
-                    state['PreviousPosition'] = new_pos;
-                    if event['EventType'] == 'PitIn': state['DisplayStatus'] = 'IN PIT'
-                    elif event['EventType'] == 'PitOut': state['DisplayStatus'] = 'OUT'; state['PitStops'] += 1
-                    elif event['EventType'] == 'Sector1' and (state['DisplayStatus'] == 'OUT' or state['DisplayStatus'] == 'GRID'): state['DisplayStatus'] = ''
-                    if event['LapNumber'] > state['LastEventLap']: state['Prev_S2'], state['Prev_S3'] = state['S2'], state['S3']; state['S1'], state['S2'], state['S3'] = pd.NaT, pd.NaT, pd.NaT
-                    state.update({ "Position": new_pos, "LapNumber": event['LapNumber'], "Compound": event['Compound'], "TyreLife": event['TyreLife'], "GapToLeader": event['GapToLeader'], "Interval": event['Interval'], "LastEventType": event['EventType'], "LastEventLap": event['LapNumber'], "LastUpdateTime": event['Time'], 'IsPersonalBestS1': event['IsPersonalBestS1'], 'IsPersonalBestS2': event['IsPersonalBestS2'], 'IsPersonalBestS3': event['IsPersonalBestS3'] })
+                    state['PreviousPosition'] = new_pos
+                    if event['EventType'] == 'PitIn':
+                        state['DisplayStatus'] = 'IN PIT'
+                    elif event['EventType'] == 'PitOut':
+                        state['DisplayStatus'] = 'OUT'
+                        state['PitStops'] += 1
+                    elif event['EventType'] == 'Sector1' and (state['DisplayStatus'] == 'OUT' or state['DisplayStatus'] == 'GRID'):
+                        state['DisplayStatus'] = ''
+                    if event['LapNumber'] > state['LastEventLap']:
+                        state['Prev_S2'], state['Prev_S3'] = state['S2'], state['S3']
+                        state['S1'], state['S2'], state['S3'] = pd.NaT, pd.NaT, pd.NaT
+                    state.update({
+                        "Position": new_pos, "LapNumber": event['LapNumber'], "Compound": event['Compound'], "TyreLife": event['TyreLife'], "GapToLeader": event['GapToLeader'], "Interval": event['Interval'], "LastEventType": event['EventType'], "LastEventLap": event['LapNumber'], "LastUpdateTime": event['Time'], 'IsPersonalBestS1': event['IsPersonalBestS1'], 'IsPersonalBestS2': event['IsPersonalBestS2'], 'IsPersonalBestS3': event['IsPersonalBestS3']
+                    })
                     if event['EventType'] == 'Sector1':
-                        state['S1'] = event['Sector1Time'];
-                        if pd.notna(state['S1']) and state['S1'] < best_s1_so_far: best_s1_so_far = state['S1']
+                        state['S1'] = event['Sector1Time']
+                        if pd.notna(state['S1']) and state['S1'] < best_s1_so_far:
+                            best_s1_so_far = state['S1']
                     elif event['EventType'] == 'Sector2':
                         state['S2'] = event['Sector2Time']
-                        if pd.notna(state['S2']) and state['S2'] < best_s2_so_far: best_s2_so_far = state['S2']
+                        if pd.notna(state['S2']) and state['S2'] < best_s2_so_far:
+                            best_s2_so_far = state['S2']
                     elif event['EventType'] == 'Lap':
                         state['S3'], state['PreviousLapTime'] = event['Sector3Time'], event['LapTime']
-                        if pd.notna(state['S3']) and state['S3'] < best_s3_so_far: best_s3_so_far = state['S3']
+                        if pd.notna(state['S3']) and state['S3'] < best_s3_so_far:
+                            best_s3_so_far = state['S3']
                     event_index += 1
                 for drv in drivers:
                     state = driver_state[drv]
                     if state['Status'] == 'On Track':
-                        if state['LastEventLap'] >= total_laps and state['LastEventType'] == 'Lap': state['Status'] = results_df.loc[results_df['Abbreviation'] == drv, 'Status'].iloc[0]; state['DisplayStatus'] = state['Status']
-                        elif (current_race_time - state['LastUpdateTime']) > RETIREMENT_THRESHOLD: state['Status'], state['DisplayStatus'] = 'DNF', 'DNF'
-            
+                        if state['LastEventLap'] >= total_laps and state['LastEventType'] == 'Lap':
+                            state['Status'] = results_df.loc[results_df['Abbreviation'] == drv, 'Status'].iloc[0]
+                            state['DisplayStatus'] = state['Status']
+                        elif (current_race_time - state['LastUpdateTime']) > RETIREMENT_THRESHOLD:
+                            state['Status'], state['DisplayStatus'] = 'DNF', 'DNF'
+
             sorted_drivers = sorted(drivers, key=lambda d: (0 if driver_state[d]['Status'] == 'On Track' else 1, driver_state[d]['Position']))
             race_laps = int(driver_state[sorted_drivers[0]]['LapNumber'])
-            
+
             # --- NEW: Get current status from all sources ---
             current_track_status_code = '1'
             if not track_status_df.empty:
                 current_statuses = track_status_df[track_status_df['Time'] <= (current_race_time + first_event_time)]
-                if not current_statuses.empty: current_track_status_code = str(current_statuses.iloc[-1]['Status'])
+                if not current_statuses.empty:
+                    current_track_status_code = str(current_statuses.iloc[-1]['Status'])
             is_wet = False
             if not weather_df.empty:
                 current_weather = weather_df[weather_df['Time'] <= (current_race_time + first_event_time)]
-                if not current_weather.empty: is_wet = current_weather.iloc[-1]['Rainfall'] == True
+                if not current_weather.empty:
+                    is_wet = current_weather.iloc[-1]['Rainfall'] == True
             
             drs_allowed = False
             if not drs_status_df.empty:
                 drs_events = drs_status_df[drs_status_df['Time'] <= (current_race_time + first_event_time)]
-                if not drs_events.empty: drs_allowed = drs_events.iloc[-1]['DRS_Status']
+                if not drs_events.empty:
+                    drs_allowed = drs_events.iloc[-1]['DRS_Status']
 
             status_info = (current_track_status_code, drs_allowed, is_wet)
             best_times = (best_s1_so_far, best_s2_so_far, best_s3_so_far)
@@ -315,15 +466,18 @@ def run_replay(year, event_name, playback_speed):
             
             draw_leaderboard(year, event_name, driver_state, sorted_drivers, driver_teams, race_laps, total_laps, current_race_time - timeline_events[0]['Time'], best_times, status_info, playback_info)
             
-            if is_paused: time.sleep(FRAME_DURATION)
+            if is_paused:
+                time.sleep(FRAME_DURATION)
             else:
                 processing_time = time.monotonic() - real_time_now
                 sleep_for = FRAME_DURATION - processing_time
-                if sleep_for > 0: time.sleep(sleep_for)
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
     except Exception as e:
-        print(f"\n--- A CRITICAL ERROR OCCURRED ---"); traceback.print_exc()
+        print("\n--- A CRITICAL ERROR OCCURRED ---")
+        traceback.print_exc()
 
-# === MAIN EXECUTION BLOCK (omitted for brevity, no changes) ===
+# === MAIN EXECUTION BLOCK ===
 if __name__ == "__main__":
     original_terminal_settings = termios.tcgetattr(sys.stdin)
     try:
@@ -333,30 +487,41 @@ if __name__ == "__main__":
         schedule = get_race_schedule(YEAR_TO_CHECK)
         races = []
         for race in schedule.itertuples():
-            if "Testing" in race.EventName: continue
+            if "Testing" in race.EventName:
+                continue
             status = check_race_status(YEAR_TO_CHECK, race.EventName)
             races.append({'RoundNumber': race.RoundNumber, 'EventName': race.EventName, 'Status': status})
         while True:
             display_menu(races)
             choice = input(f"{BOLD}> {RESET}")
-            if choice.lower() == 'q': break
+            if choice.lower() == 'q':
+                break
             try:
                 choice_idx = int(choice) - 1
-                if not 0 <= choice_idx < len(races): print("Invalid choice."); continue
+                if not 0 <= choice_idx < len(races):
+                    print("Invalid choice.")
+                    continue
                 selected_race = races[choice_idx]
-                year = YEAR_TO_CHECK; event = selected_race['EventName']
+                year = YEAR_TO_CHECK
+                event = selected_race['EventName']
                 raw_status = check_race_status(year, event)
                 if "Not Downloaded" in raw_status:
-                    print("\nFetching raw data...");
-                    if not run_script('fetch_raw.py', year, event): continue
+                    print("\nFetching raw data...")
+                    if not run_script('fetch_raw.py', year, event):
+                        continue
                     print("\nBuilding timeline...")
-                    if not run_script('build_timeline.py', year, event): continue
+                    if not run_script('build_timeline.py', year, event):
+                        continue
                 elif "Raw Data" in raw_status:
                     print("\nBuilding timeline from existing raw data...")
-                    if not run_script('build_timeline.py', year, event): continue
+                    if not run_script('build_timeline.py', year, event):
+                        continue
                 run_replay(year, event, DEFAULT_PLAYBACK_SPEED)
                 break
-            except ValueError: print("Invalid input.")
-            except KeyboardInterrupt: print("\nExiting."); break
+            except ValueError:
+                print("Invalid input.")
+            except KeyboardInterrupt:
+                print("\nExiting.")
+                break
     finally:
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, original_terminal_settings)
