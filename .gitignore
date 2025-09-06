@@ -1,0 +1,10 @@
+# Python virtual environment
+venv/
+# Byte-compiled files
+__pycache__/
+*.pyc
+# fastf1 cache
+f1_cache/
+# Data folders
+raw_data/
+processed_data/
