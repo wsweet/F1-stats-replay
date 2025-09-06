@@ -1,6 +1,6 @@
 # F1 Stats Replay CLI
 
-A command-line tool written in Python for "replaying" F1 race data. This project fetches and processes raw data from the FastF1 API to provide a real-time, terminal-based view of a race.
+A hobby project to build a command-line tool for "replaying" F1 race data. This project uses Python to fetch and process raw data from the FastF1 API to provide a real-time, terminal-based view of a race. This is half built by me, and half AI (Gemini).
 
 ## Features
 
