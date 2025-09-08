@@ -17,7 +17,6 @@ import os
 import math
 
 # === UTILITY FUNCTIONS ===
-# Moved from the end of the file to the top
 def format_timedelta(td, dim=False, bold=False, color=None):
     """
     Formats a pandas Timedelta object into a human-readable string.
@@ -312,7 +311,6 @@ def run_replay(year, event_name, playback_speed):
         drivers = results_df['Abbreviation'].tolist()
         driver_teams = dict(zip(results_df['Abbreviation'], results_df['TeamName']))
         
-        # --- NEW: Load all status data, with fallbacks ---
         try:
             track_status_df = pd.read_pickle(RAW_DATA_FOLDER / "track_status.pkl")
         except FileNotFoundError:
@@ -330,17 +328,18 @@ def run_replay(year, event_name, playback_speed):
         print(f"❌ Error: Could not load data file: {e.filename}")
         return
     
-    # --- NEW: Pre-process Race Control messages to create a DRS timeline ---
+    # Pre-process Race Control messages to create a DRS timeline
     drs_status_df = pd.DataFrame()
     if not race_control_df.empty:
-        drs_messages = race_control_df[race_control_df['Message'].str.contains("DRS", na=False)]
+        drs_messages = race_control_df[race_control_df['Message'].str.contains("DRS", na=False)].copy()
         if not drs_messages.empty:
-            drs_timeline = [{'Time': pd.Timedelta(seconds=0), 'DRS_Status': False}] # Start with DRS disabled
-            for row in drs_messages.itertuples():
-                drs_timeline.append({'Time': row.Time, 'DRS_Status': "ENABLED" in row.Message.upper()})
-            drs_status_df = pd.DataFrame(drs_timeline)
+            drs_messages['Time'] = drs_messages['Time'] - first_event_time
+            drs_status_df = drs_messages[['Time']].copy()
+            drs_status_df['DRS_Status'] = drs_messages['Message'].str.contains("ENABLED", case=False, na=False)
+            initial_state_df = pd.DataFrame([{'Time': pd.Timedelta(seconds=0), 'DRS_Status': False}])
+            drs_status_df = pd.concat([initial_state_df, drs_status_df], ignore_index=True)
+            drs_status_df.sort_values(by='Time', inplace=True)
 
-    # (State Init is unchanged)
     lap1_laps = laps_df.loc[laps_df['LapNumber'] == 1]
     starting_compounds = dict(zip(lap1_laps['Driver'], lap1_laps['Compound']))
     driver_state = {}
@@ -366,7 +365,6 @@ def run_replay(year, event_name, playback_speed):
         last_frame_time = time.monotonic()
         
         while event_index < total_events:
-            # (Input handling and time advancement)
             key = get_user_input()
             if key:
                 if key.lower() == 'q':
@@ -392,7 +390,6 @@ def run_replay(year, event_name, playback_speed):
                 race_time_delta = pd.Timedelta(seconds=real_time_delta * playback_speed)
                 current_race_time += race_time_delta
                 while event_index < total_events and timeline_events[event_index]['Time'] <= current_race_time:
-                    # (Event processing logic unchanged)
                     event = timeline_events[event_index]
                     drv = event['Driver']
                     state = driver_state[drv]
@@ -442,21 +439,20 @@ def run_replay(year, event_name, playback_speed):
             sorted_drivers = sorted(drivers, key=lambda d: (0 if driver_state[d]['Status'] == 'On Track' else 1, driver_state[d]['Position']))
             race_laps = int(driver_state[sorted_drivers[0]]['LapNumber'])
 
-            # --- NEW: Get current status from all sources ---
             current_track_status_code = '1'
             if not track_status_df.empty:
-                current_statuses = track_status_df[track_status_df['Time'] <= (current_race_time + first_event_time)]
+                current_statuses = track_status_df[track_status_df['Time'] - first_event_time <= current_race_time]
                 if not current_statuses.empty:
                     current_track_status_code = str(current_statuses.iloc[-1]['Status'])
             is_wet = False
             if not weather_df.empty:
-                current_weather = weather_df[weather_df['Time'] <= (current_race_time + first_event_time)]
+                current_weather = weather_df[weather_df['Time'] - first_event_time <= current_race_time]
                 if not current_weather.empty:
                     is_wet = current_weather.iloc[-1]['Rainfall'] == True
             
             drs_allowed = False
             if not drs_status_df.empty:
-                drs_events = drs_status_df[drs_status_df['Time'] <= (current_race_time + first_event_time)]
+                drs_events = drs_status_df[drs_status_df['Time'] <= current_race_time]
                 if not drs_events.empty:
                     drs_allowed = drs_events.iloc[-1]['DRS_Status']
 
@@ -464,7 +460,7 @@ def run_replay(year, event_name, playback_speed):
             best_times = (best_s1_so_far, best_s2_so_far, best_s3_so_far)
             playback_info = (is_paused, playback_speed)
             
-            draw_leaderboard(year, event_name, driver_state, sorted_drivers, driver_teams, race_laps, total_laps, current_race_time - timeline_events[0]['Time'], best_times, status_info, playback_info)
+            draw_leaderboard(year, event_name, driver_state, sorted_drivers, driver_teams, race_laps, total_laps, current_race_time, best_times, status_info, playback_info)
             
             if is_paused:
                 time.sleep(FRAME_DURATION)

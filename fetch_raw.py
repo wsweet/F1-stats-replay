@@ -1,56 +1,62 @@
-# fetch_raw.py
-
+import sys
 import fastf1
+import pandas as pd
 from pathlib import Path
-import argparse
 
-def fetch_raw_data(year: int, event: str):
+def fetch_data(year, event):
     """
-    Downloads and caches raw F1 data for a specific event.
-
-    Args:
-        year (int): The year of the event.
-        event (str): The name of the event (e.g., "Dutch Grand Prix").
+    Fetches raw F1 session data and saves it to a structured directory.
     """
-    print(f"--- Fetching Raw Data for {year} {event} ---")
-    fastf1.Cache.enable_cache("f1_cache")
+    session = fastf1.get_session(year, event, 'R')
+    try:
+        session.load(telemetry=True, weather=True, messages=True)
+    except Exception as e:
+        print(f"❌ Error loading session data: {e}")
+        return False
 
     event_name_safe = event.replace(' ', '_')
-    event_folder = Path(f"raw_data/{year}_{event_name_safe}")
-    event_folder.mkdir(parents=True, exist_ok=True)
-    print(f"📁 Saving raw data to {event_folder}/")
+    output_dir = Path(f"raw_data/{year}_{event_name_safe}")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        session = fastf1.get_session(year, event, 'R')
-        session.load(laps=True, telemetry=False, weather=True, messages=True) # Ensure weather and messages are loaded
-    except Exception as e:
-        print(f"❌ Could not load session for {year} {event}. Error: {e}")
-        return
-
-    session.laps.to_pickle(event_folder / "laps.pkl")
-    session.results.to_pickle(event_folder / "results.pkl")
-    print(f"✅ Saved laps and results.")
-
-    # --- NEW: Save Track Status, Weather, and Race Control Data ---
-    if hasattr(session, 'track_status') and session.track_status is not None:
-        session.track_status.to_pickle(event_folder / "track_status.pkl")
-        print("✅ Saved track status.")
-    
-    if hasattr(session, 'weather_data') and session.weather_data is not None:
-        session.weather_data.to_pickle(event_folder / "weather_data.pkl")
-        print("✅ Saved weather data.")
+        # Save key session data to pickle files
+        laps = session.laps
+        results = session.results
+        session_info = session.session_info
         
-    if hasattr(session, 'race_control_messages') and session.race_control_messages is not None:
-        session.race_control_messages.to_pickle(event_folder / "race_control.pkl")
-        print("✅ Saved race control messages.")
-    
-    print(f"--- Fetch complete for {year} {event} ---")
+        # --- FIX FOR INCONSISTENT DATA TYPES ---
+        # The race_control_messages Time column can be inconsistent.
+        # Ensure it is a consistent Timedelta before saving.
+        race_control_messages = session.race_control_messages.copy()
+        if not race_control_messages.empty:
+            race_control_messages['Time'] = race_control_messages['Time'] - race_control_messages['Time'].iloc[0]
+        # End of fix
+        
+        weather_data = session.weather_data
+        track_status = session.track_status
 
+        laps.to_pickle(output_dir / "laps.pkl")
+        results.to_pickle(output_dir / "results.pkl")
+        session_info.to_pickle(output_dir / "session_info.pkl")
+        race_control_messages.to_pickle(output_dir / "race_control.pkl")
+        weather_data.to_pickle(output_dir / "weather_data.pkl")
+        track_status.to_pickle(output_dir / "track_status.pkl")
+        
+        print(f"✅ Raw data for {year} {event} saved successfully.")
+        return True
+    except Exception as e:
+        print(f"❌ Error saving data: {e}")
+        return False
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fetch raw data for an F1 event.")
-    parser.add_argument("year", type=int, help="The year of the race.")
-    parser.add_argument("event", type=str, help="The name of the event (e.g., 'Dutch Grand Prix').")
-    args = parser.parse_args()
+    if len(sys.argv) < 3:
+        print("Usage: python fetch_raw.py <year> <event_name>")
+        sys.exit(1)
 
-    fetch_raw_data(args.year, args.event)
+    YEAR = int(sys.argv[1])
+    EVENT = sys.argv[2]
+    
+    # Enable cache for fastf1
+    fastf1.Cache.enable_cache('f1_cache')
+    
+    fetch_data(YEAR, EVENT)
